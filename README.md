@@ -1,5 +1,5 @@
 - 👋 Hi, I’m @rei-lemo
-- 👀 I’m obsessed with UNIVERSA:print("hello world")
+- 👀 I’m obsessed with UNIVERSAl education :print("hello world")
 - 🌱 I’m currently learning basic computer science and python
 - 💞️ I’m looking to collaborate on github
 - 📫 How to reach me ...
