@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rei Lemo (Light) vs Tarh Yaja (Darkness)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body { height:100%; margin:0; background:#0c0e12; display:flex; align-items:center; justify-content:center; color:#fff; font-family: Arial, Helvetica, sans-serif;}
+    #gameWrap { width:1000px; max-width:95vw; box-shadow: 0 12px 30px rgba(0,0,0,0.6); border-radius:6px; overflow:hidden; background:#000;}
+    canvas { display:block; width:100%; height:auto; background:#0c0e12; }
+    .footer { padding:8px 12px; background:#090a0b; color:#ddd; font-size:13px; display:flex; justify-content:space-between; align-items:center;}
+    .controls { font-size:13px; }
+    a { color:#6cf; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div id="gameWrap">
+    <canvas id="game" width="1000" height="600"></canvas>
+    <div class="footer">
+      <div class="controls">
+        Controls — A/Z (Miner: 50g) · S/X (Swordsman: 100g) · D/C (Archer: 100g) · Esc: Quit
+      </div>
+      <div>Deploy: drop this folder into Vercel (static)</div>
+    </div>
+  </div>
+
+  <!-- Optional sounds: put files into ./sounds/ — names shown here -->
+  <audio id="sndMining" src="sounds/mining.wav"></audio>
+  <audio id="sndSword" src="sounds/sword.wav"></audio>
+  <audio id="sndArrow" src="sounds/arrow.wav"></audio>
+  <audio id="sndDeath" src="sounds/death.wav"></audio>
+  <audio id="sndGold" src="sounds/gold.wav"></audio>
+  <audio id="sndThunder" src="sounds/thunder.wav"></audio>
+
+<script>
+(() => {
+  // Canvas & constants
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const WIDTH = canvas.width, HEIGHT = canvas.height;
+  const GROUND_Y = HEIGHT - 100;
+
+  // Gameplay constants (keep same as Python)
+  const MINER_COST = 50;
+  const SOLDIER_COST = 100;
+  const SOLDIER_LIMIT_TOTAL = 30;
+  const MAX_MINERS_PER_TEAM = 5;
+
+  // Colors
+  const WHITE = '#ffffff', BLACK = '#000000', RED = '#ff4444', BLUE = '#3290ff', PURPLE = '#b432c8';
+  const DARK_PURPLE = '#7a2d7a', GOLD = '#ffd24d', GREEN = '#1e5f2e', VERY_DARK = '#0c0e12', LIGHTNING_YELLOW = '#fafae6';
+  const RAIN_COLOR = 'rgba(160,170,190,0.9)';
+
+  // Sounds (optional)
+  function safeAudio(id) {
+    const el = document.getElementById(id);
+    return (el && el.canPlayType) ? el : null;
+  }
+  const MINING_SOUND = safeAudio('sndMining');
+  const SWORD_SOUND = safeAudio('sndSword');
+  const ARROW_SOUND = safeAudio('sndArrow');
+  const DEATH_SOUND = safeAudio('sndDeath');
+  const GOLD_SOUND = safeAudio('sndGold');
+  const THUNDER_SOUND = safeAudio('sndThunder');
+
+  // Utilities
+  function rand(min, max){ return Math.floor(Math.random()*(max-min+1))+min; }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // Weather with rain + lightning + flash + thunder delay
+  class Weather {
+    constructor(){
+      this.rainDrops = [];
+      for(let i=0;i<420;i++){
+        this.rainDrops.push({x:rand(0,WIDTH), y:rand(-HEIGHT,0), speed:rand(18,26)});
+      }
+      this.lightningTimer = 0;
+      this.lightningCooldown = 0;
+      this.lightningFlashes = []; // array of bolts (each bolt is array of points)
+      this.flashAlpha = 0;
+      this.thunderDelayTick = null;
+      this.frame = 0;
+    }
+    _makeBolt(x0,y0,x1,y1,displace=60,depth=7){
+      // recursive subdivision — iterative approach to avoid deep recursion
+      let pts = [{x:x0,y:y0},{x:x1,y:y1}];
+      function subdivide(arr, dis, d){
+        if(d<=0 || dis < 2) return arr;
+        let res = [];
+        for(let i=0;i<arr.length-1;i++){
+          const p0=arr[i], p1=arr[i+1];
+          const midx = (p0.x+p1.x)/2 + (Math.random()*2-1)*dis;
+          const midy = (p0.y+p1.y)/2 + (Math.random()*2-1)*dis;
+          res.push(p0); res.push({x:midx,y:midy});
+        }
+        res.push(arr[arr.length-1]);
+        return subdivide(res, dis/2, d-1);
+      }
+      return subdivide(pts, displace, depth);
+    }
+    update(){
+      this.frame++;
+      // rain movement
+      for(let r of this.rainDrops){
+        r.y += r.speed;
+        r.x += r.speed*0.03;
+        if(r.y > HEIGHT){
+          r.y = rand(-120, -5);
+          r.x = rand(0, WIDTH);
+          r.speed = rand(18,26);
+        }
+      }
+      // lightning logic
+      if(this.lightningTimer > 0){
+        this.lightningTimer--;
+        if(this.flashAlpha > 0) this.flashAlpha = Math.max(0, this.flashAlpha - 18);
+        if(this.lightningTimer === 0) this.lightningFlashes = [];
+      } else if(this.lightningCooldown > 0){
+        this.lightningCooldown--;
+      } else {
+        if(Math.random() < 0.018){
+          let bolts = [];
+          const num = rand(1,3);
+          for(let i=0;i<num;i++){
+            const xs = rand(100, WIDTH-100);
+            bolts.push(this._makeBolt(xs,-10, xs+rand(-40,40), rand(120,280), rand(40,120), 7));
+          }
+          this.lightningFlashes = bolts;
+          this.lightningTimer = rand(6,12);
+          this.flashAlpha = 200;
+          this.lightningCooldown = rand(40,240);
+          if(THUNDER_SOUND){
+            this.thunderDelayTick = this.frame + rand(5,50); // shorter => closer
+          }
+        }
+      }
+      if(this.thunderDelayTick && this.frame >= this.thunderDelayTick){
+        try{ if(THUNDER_SOUND) { THUNDER_SOUND.currentTime = 0; THUNDER_SOUND.play(); } }catch(e){}
+        this.thunderDelayTick = null;
+      }
+    }
+    draw(ctx){
+      // sky
+      ctx.fillStyle = VERY_DARK; ctx.fillRect(0,0,WIDTH,HEIGHT);
+      // cloud layers
+      for(let i=0;i<6;i++){
+        const cx = (i * 180 + (performance.now()*0.012)%180) - 140;
+        ctx.fillStyle = 'rgba(24,28,34,0.98)';
+        ctx.beginPath();
+        ctx.ellipse(cx, 6 + (i%3)*8 + 40, 360, 120, 0, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // lightning bolts
+      ctx.lineCap = 'round';
+      for(let bolt of this.lightningFlashes){
+        if(bolt.length >= 2){
+          // glow: draw wider faint lines
+          for(let w of [10,6,3]){
+            ctx.beginPath();
+            for(let i=0;i<bolt.length;i++){
+              const p = bolt[i];
+              if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+            }
+            ctx.strokeStyle = 'rgba(255,255,220,0.06)';
+            ctx.lineWidth = w;
+            ctx.stroke();
+          }
+          // core
+          ctx.beginPath();
+          for(let i=0;i<bolt.length;i++){
+            const p = bolt[i];
+            if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+          }
+          ctx.strokeStyle = LIGHTNING_YELLOW;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+      // rain
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = RAIN_COLOR;
+      for(let r of this.rainDrops){
+        ctx.beginPath();
+        ctx.moveTo(r.x, r.y);
+        ctx.lineTo(r.x+3, r.y+14);
+        ctx.stroke();
+      }
+      // flash overlay
+      if(this.flashAlpha > 0){
+        ctx.fillStyle = `rgba(255,255,255,${clamp(this.flashAlpha/255, 0,1)})`;
+        ctx.fillRect(0,0,WIDTH,HEIGHT);
+      }
+    }
+  }
+
+  // Base class
+  class Base {
+    constructor(x,y,team){
+      this.x=x; this.y=y; this.team=team;
+      this.health=1000; this.maxHealth=1000;
+      this.gold=100;
+      this.unitCooldown=0;
+    }
+    draw(ctx){
+      const color = (this.team==='player')?BLUE:PURPLE;
+      // enemy long hair on left side if enemy (triangular hair)
+      if(this.team === 'enemy'){
+        ctx.fillStyle = DARK_PURPLE;
+        ctx.beginPath();
+        ctx.moveTo(this.x-140, this.y-20);
+        ctx.lineTo(this.x-120, this.y+30);
+        ctx.lineTo(this.x-110, this.y+90);
+        ctx.lineTo(this.x-60, this.y+80);
+        ctx.lineTo(this.x-30, this.y+35);
+        ctx.lineTo(this.x+20, this.y+40);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(this.x-50, this.y);
+      ctx.lineTo(this.x+50, this.y);
+      ctx.lineTo(this.x, this.y-100);
+      ctx.closePath();
+      ctx.fill();
+      // health bar
+      const healthW = Math.max(0,(this.health/this.maxHealth)*100);
+      ctx.fillStyle = RED;
+      ctx.fillRect(this.x-50, this.y-120, healthW, 10);
+    }
+  }
+
+  // Unit class
+  class Unit {
+    constructor(x,y,type,team,gender='male'){
+      this.x = x; this.y = y; this.type = type; this.team = team; this.gender=gender;
+      if(type==='swordsman') this.speed = 3.0;
+      else if(type==='miner') this.speed = 1.2;
+      else this.speed = 2.0;
+      this.health = 100; this.maxHealth=100;
+      this.damage = (type==='swordsman')?20:15;
+      this.attackRange = (type==='swordsman')?50:200;
+      this.attackCooldown = 0;
+      this.target = null;
+      this.miningCooldown = 120;
+      this.direction = (team==='player')?1:-1;
+      this.attacking = false;
+      this.mining = (type==='miner');
+    }
+    move(units, bases, goldMinePos){
+      if(this.attacking || this.mining) return;
+      if(this.type==='miner'){
+        const mineX = goldMinePos;
+        if(Math.abs(this.x - mineX) > 10){
+          this.x += this.speed * ((mineX > this.x)?1:-1);
+        } else {
+          this.mining = true;
+        }
+        return;
+      }
+      const nearest = this.findNearestEnemy(units);
+      if(nearest && Math.abs(this.x - nearest.x) < this.attackRange){
+        this.target = nearest; this.attacking = true;
+      } else {
+        this.x += this.speed * this.direction;
+      }
+    }
+    findNearestEnemy(units){
+      let nearest = null, minD = Infinity;
+      for(let u of units){
+        if(u.team !== this.team){
+          const d = Math.abs(this.x - u.x);
+          if(d < minD){ minD = d; nearest = u; }
+        }
+      }
+      return nearest;
+    }
+    attack(units, bases){
+      if(this.attackCooldown > 0){ this.attackCooldown--; return; }
+      if(this.type === 'miner'){
+        if(this.mining){
+          if(this.miningCooldown > 0){ this.miningCooldown--; return; }
+          const base = (this.team==='player')?bases[0]:bases[1];
+          const gold = rand(1,3);
+          base.gold += gold;
+          this.miningCooldown = 120;
+          try{ if(MINING_SOUND){ MINING_SOUND.currentTime=0; MINING_SOUND.play(); } }catch(e){}
+          try{ if(GOLD_SOUND && gold>1){ GOLD_SOUND.currentTime=0; GOLD_SOUND.play(); } }catch(e){}
+        }
+        return;
+      }
+      if(this.target){
+        if(units.indexOf(this.target) === -1){ this.target=null; this.attacking=false; return; }
+        this.target.health -= this.damage;
+        this.attackCooldown = 30;
+        try{
+          if(this.type==='swordsman' && SWORD_SOUND){ SWORD_SOUND.currentTime=0; SWORD_SOUND.play(); }
+          else if(this.type==='archer' && ARROW_SOUND){ ARROW_SOUND.currentTime=0; ARROW_SOUND.play(); }
+        }catch(e){}
+        if(this.target.health <= 0){
+          try{ if(DEATH_SOUND){ DEATH_SOUND.currentTime=0; DEATH_SOUND.play(); } }catch(e){}
+          const idx = units.indexOf(this.target);
+          if(idx !== -1) units.splice(idx,1);
+          this.target = null; this.attacking = false;
+        }
+      }
+    }
+    draw(ctx){
+      const color = (this.team==='player')?BLUE:PURPLE;
+      // female long hair for enemy
+      if(this.gender==='female' && this.team==='enemy'){
+        ctx.fillStyle = DARK_PURPLE;
+        ctx.beginPath();
+        ctx.ellipse(this.x-0, this.y-48, 22, 18, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(this.x-30, this.y-36, 12, 25, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(this.x+6, this.y-36, 12, 25, 0, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // health bar
+      const hw = Math.max(0,(this.health/this.maxHealth)*30);
+      ctx.fillStyle = RED; ctx.fillRect(this.x-15, this.y-50, hw, 5);
+      // torso/head
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(this.x, this.y-30, 8, 0, Math.PI*2); ctx.fill();
+      ctx.fillRect(this.x-1, this.y-22, 2, 20);
+      // legs (simple pedaling animation)
+      const legAngle = (!this.attacking)? Math.sin(performance.now()*0.01)*0.3 : 0;
+      const lx1 = Math.floor(this.x - 10*Math.cos(legAngle));
+      const lx2 = Math.floor(this.x + 10*Math.cos(legAngle));
+      ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(lx1, this.y+15); ctx.strokeStyle = color; ctx.lineWidth=2; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(lx2, this.y+15); ctx.stroke();
+      // weapon
+      if(this.type === 'swordsman'){
+        if(this.attacking){
+          const wx = Math.floor(this.x + 20 * this.direction);
+          ctx.beginPath(); ctx.moveTo(this.x, this.y-20); ctx.lineTo(wx, this.y-30); ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(wx, this.y-30); ctx.lineTo(wx + 15*this.direction, this.y-25); ctx.strokeStyle = WHITE; ctx.lineWidth = 4; ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(this.x, this.y-20); ctx.lineTo(this.x + 15*this.direction, this.y-15); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+        }
+      } else if(this.type==='archer'){
+        if(this.attacking){
+          ctx.beginPath(); ctx.moveTo(this.x, this.y-20); ctx.lineTo(this.x + 20*this.direction, this.y-20); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(this.x + 20*this.direction, this.y-20); ctx.lineTo(this.x + 30*this.direction, this.y-20); ctx.strokeStyle = WHITE; ctx.lineWidth = 2; ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(this.x, this.y-20); ctx.lineTo(this.x + 15*this.direction, this.y-15); ctx.strokeStyle = color; ctx.lineWidth=2; ctx.stroke();
+        }
+      } else if(this.type==='miner'){
+        const tx = Math.floor(this.x + 15*this.direction);
+        const ty = Math.floor(this.y - 15 + (this.mining? Math.sin(performance.now()*0.01)*5:0));
+        ctx.beginPath(); ctx.moveTo(this.x, this.y-20); ctx.lineTo(tx, ty); ctx.strokeStyle = color; ctx.lineWidth=2; ctx.stroke();
+        ctx.beginPath(); ctx.arc(tx, ty, 4, 0, Math.PI*2); ctx.fillStyle = GOLD; ctx.fill();
+      }
+    }
+  }
+
+  // Game manager
+  class Game {
+    constructor(){
+      this.playerBase = new Base(100, GROUND_Y, 'player');
+      this.enemyBase = new Base(WIDTH-100, GROUND_Y, 'enemy');
+      this.bases = [this.playerBase, this.enemyBase];
+      this.units = [];
+      this.goldMinePos = Math.floor(WIDTH/2);
+      this.weather = new Weather();
+      this.playerName = "Rei Lemo (Light)";
+      this.enemyName = "Tarh Yaja (Gundi of Grass) - Female";
+      this.message = "";
+      this.messageTimer = 0;
+    }
+    setMessage(text, frames=120){
+      this.message = text; this.messageTimer = frames;
+    }
+    countSoldiersTotal(){ return this.units.filter(u => u.type==='swordsman' || u.type==='archer').length; }
+    countMinersTeam(team){ return this.units.filter(u => u.team===team && u.type==='miner').length; }
+    spawnUnit(unitType, team){
+      if(['swordsman','archer'].includes(unitType)){
+        if(this.countSoldiersTotal() >= SOLDIER_LIMIT_TOTAL){
+          this.setMessage(`Soldier cap reached (${SOLDIER_LIMIT_TOTAL} total).`);
+          return;
+        }
+      }
+      if(unitType === 'miner'){
+        if(this.countMinersTeam(team) >= MAX_MINERS_PER_TEAM){
+          this.setMessage(`${team} miner cap reached (${MAX_MINERS_PER_TEAM}).`);
+          return;
+        }
+      }
+      const base = (team==='player')?this.playerBase:this.enemyBase;
+      if(unitType === 'miner'){
+        if(base.gold < MINER_COST){ this.setMessage('Not enough gold.'); return; }
+        base.gold -= MINER_COST;
+      } else {
+        if(base.gold < SOLDIER_COST){ this.setMessage('Not enough gold.'); return; }
+        base.gold -= SOLDIER_COST;
+      }
+      const x = (team==='player')? this.playerBase.x + 50 : this.enemyBase.x - 50;
+      const gender = (team==='enemy')?'female':'male';
+      this.units.push(new Unit(x, GROUND_Y, unitType, team, gender));
+    }
+    update(){
+      this.weather.update();
+      if(this.messageTimer > 0){ this.messageTimer--; if(this.messageTimer===0) this.message=''; }
+
+      // Update units
+      for(let i = this.units.length-1; i >= 0; i--){
+        const u = this.units[i];
+        try{
+          u.move(this.units, this.bases, this.goldMinePos);
+          u.attack(this.units, this.bases);
+          const enemyBase = (u.team==='player')?this.enemyBase:this.playerBase;
+          if(Math.abs(u.x - enemyBase.x) < 60){
+            enemyBase.health -= u.damage;
+            if(enemyBase.health <= 0) return u.team;
+            // remove unit after hitting base (as in original)
+            this.units.splice(i,1);
+          }
+        } catch(e){
+          console.error('unit update error', e);
+        }
+      }
+
+      // Enemy AI spawn
+      if(this.enemyBase.unitCooldown <= 0 && Math.random() < 0.02){
+        const ut = ['swordsman','archer','miner'][rand(0,2)];
+        this.spawnUnit(ut, 'enemy');
+        this.enemyBase.unitCooldown = 60;
+      } else {
+        this.enemyBase.unitCooldown = Math.max(0, this.enemyBase.unitCooldown - 1);
+      }
+
+      // passive gold
+      this.enemyBase.gold += 1;
+      this.playerBase.gold += 1;
+
+      return null;
+    }
+    draw(ctx){
+      // background & weather
+      this.weather.draw(ctx);
+
+      // ground
+      ctx.fillStyle = GREEN; ctx.fillRect(0, GROUND_Y, WIDTH, HEIGHT-GROUND_Y);
+
+      // gold mine
+      ctx.beginPath(); ctx.arc(this.goldMinePos, GROUND_Y-20, 15, 0, Math.PI*2); ctx.fillStyle = GOLD; ctx.fill();
+
+      // draw bases & units
+      this.playerBase.draw(ctx);
+      this.enemyBase.draw(ctx);
+      for(let u of this.units) u.draw(ctx);
+
+      // UI
+      ctx.font = '20px Arial';
+      ctx.fillStyle = BLUE; ctx.fillText(this.playerName, 10, 26);
+      ctx.fillStyle = WHITE; ctx.fillText('Gold: '+this.playerBase.gold, 10, 56);
+      ctx.fillStyle = PURPLE; const eText = this.enemyName; const metrics = ctx.measureText(eText);
+      ctx.fillText(eText, WIDTH - metrics.width - 10, 26);
+      ctx.fillStyle = WHITE; ctx.fillText('Gold: '+this.enemyBase.gold, WIDTH - 120, 56);
+
+      ctx.font = '14px Arial';
+      ctx.fillStyle = WHITE;
+      ctx.fillText('Controls:', WIDTH/2 - 80, 20);
+      ctx.fillText('A/Z: Miner (50g) | S/X: Swordsman (100g) | D/C: Archer (100g)', WIDTH/2 - 220, 40);
+
+      ctx.font = '14px Arial';
+      const soldiersTotal = this.countSoldiersTotal();
+      const minersP = this.countMinersTeam('player'), minersE = this.countMinersTeam('enemy');
+      ctx.fillText(`Soldiers: ${soldiersTotal}/${SOLDIER_LIMIT_TOTAL}  |  Miners P:${minersP}/${MAX_MINERS_PER_TEAM} E:${minersE}/${MAX_MINERS_PER_TEAM}`, 10, HEIGHT - 34);
+
+      if(this.message){
+        ctx.font = '28px Arial';
+        ctx.fillStyle = '#ffe67a';
+        const m = this.message;
+        ctx.fillText(m, WIDTH/2 - ctx.measureText(m).width/2, HEIGHT - 74);
+      }
+    }
+  }
+
+  // Main loop
+  const game = new Game();
+  let running = true;
+  let winner = null;
+
+  // Input
+  const keys = {};
+  window.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape'){ running=false; return; }
+    keys[e.key.toLowerCase()] = true;
+    // immediate spawns map to original keys
+    if(e.key.toLowerCase() === 'a') game.spawnUnit('miner','player');
+    if(e.key.toLowerCase() === 's') game.spawnUnit('swordsman','player');
+    if(e.key.toLowerCase() === 'd') game.spawnUnit('archer','player');
+    if(e.key.toLowerCase() === 'z') game.spawnUnit('miner','enemy');
+    if(e.key.toLowerCase() === 'x') game.spawnUnit('swordsman','enemy');
+    if(e.key.toLowerCase() === 'c') game.spawnUnit('archer','enemy');
+  });
+  window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+  function gameLoop(){
+    if(!running){ // draw "quit" screen briefly
+      ctx.fillStyle = '#000'; ctx.fillRect(0,0,WIDTH,HEIGHT);
+      ctx.fillStyle = '#fff'; ctx.font = '30px Arial'; ctx.fillText('Game Quit', WIDTH/2-70, HEIGHT/2);
+      return;
+    }
+    try{
+      const win = game.update();
+      if(win){
+        winner = win;
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,WIDTH,HEIGHT);
+        ctx.fillStyle = (winner==='player')?BLUE:PURPLE;
+        ctx.font = '64px Arial';
+        const txt = (winner==='player')? 'Rei Lemo Wins!': 'Tarh Yaja Wins!';
+        ctx.fillText(txt, WIDTH/2 - ctx.measureText(txt).width/2, HEIGHT/2);
+        // stop loop after message
+        setTimeout(()=>{ running=false; }, 3000);
+        return;
+      }
+    } catch(e){
+      console.error('Update error:', e);
+    }
+
+    try{
+      game.draw(ctx);
+    } catch(e){
+      console.error('Draw error:', e);
+    }
+
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Start
+  requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
